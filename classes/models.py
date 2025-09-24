@@ -1,16 +1,15 @@
 from django.db import models
 from school.models import School
 
-
 class Class(models.Model):
-    GRADE_CHOICES = [(i, str(i)) for i in range(1, 11)]
+    GRADE_CHOICES = [(i, str(i)) for i in range(1, 11)]  # Grades 1 to 10
     school = models.ForeignKey(School, on_delete=models.CASCADE, related_name="classes")
     grade = models.IntegerField(choices=GRADE_CHOICES)
-    # Remove single section FK; instead, sections will be related via Section model
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("school", "grade")  # Only grade unique per school
+        unique_together = ("school", "grade")  # Each grade unique per school
+        ordering = ["grade"]
 
     def __str__(self):
         return f"Grade {self.grade} ({self.school.name})"

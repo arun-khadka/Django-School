@@ -13,6 +13,7 @@ from rest_framework.parsers import MultiPartParser
 
 from exam.utils.single_marksheet import get_single_student_marksheet_data
 from school.models import School
+from students.models import Student, StudentMarks, StudentSubjectMarks
 from subject.models import Subject
 from classes.models import Class
 from section.models import Section
@@ -61,7 +62,9 @@ class ExamTermListByUserView(APIView):
 
     def get(self, request):
         # Get all terms linked to schools owned by the logged-in user
-        terms = ExamTerm.objects.filter(school__owner=request.user).select_related("school")
+        terms = ExamTerm.objects.filter(school__owner=request.user).select_related(
+            "school"
+        )
 
         serializer = ExamTermSerializer(terms, many=True)
         return Response(
@@ -71,7 +74,7 @@ class ExamTermListByUserView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-    
+
 
 class ExamTermListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -229,22 +232,172 @@ class ExamMarksheetGenerateView(APIView):
 
 class MarksheetImportView(APIView):
     """
-    Import an Excel marksheet, calculate pass/fail, and export styled Excel
+    Import an Excel marksheet, save student data & marks to DB,
+    and return JSON summary including subject marks, grade, and rank.
     """
 
     def post(self, request):
         serializer = MarksheetImportSerializer(data=request.data)
-        if serializer.is_valid():
-            full_mark = serializer.validated_data["full_mark"]
-            pass_mark = serializer.validated_data["pass_mark"]
-            file = serializer.validated_data["file"]
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            try:
-                return generate_marksheet_with_results(file, full_mark, pass_mark)
-            except Exception as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        file = serializer.validated_data["file"]
+        full_mark = serializer.validated_data.get("full_mark", 100)
+        pass_mark = serializer.validated_data.get("pass_mark", 33)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            wb = openpyxl.load_workbook(file)
+            ws = wb.active
+
+            # === Read meta from Excel ===
+            school_name = (
+                str(ws.cell(row=1, column=1).value or "").replace("School:", "").strip()
+            )
+            class_row_value = str(ws.cell(row=2, column=1).value or "")
+            parts = [p.strip() for p in class_row_value.split("|")]
+            class_name = section_name = term_name = None
+            for part in parts:
+                if part.startswith("Class:"):
+                    class_name = part.replace("Class:", "").strip()
+                elif part.startswith("Section:"):
+                    section_name = part.replace("Section:", "").strip()
+                elif part.startswith("Term:"):
+                    term_name = part.replace("Term:", "").strip()
+
+            if not all([school_name, class_name, section_name, term_name]):
+                return Response(
+                    {"error": "School, Class, Section, or Term not found in Excel."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # === Fetch DB objects ===
+            school = School.objects.get(name__iexact=school_name)
+            grade_int = int(class_name)
+            class_obj = Class.objects.get(grade=grade_int, school=school)
+            section = Section.objects.get(
+                name__iexact=section_name, class_obj=class_obj
+            )
+            term = ExamTerm.objects.get(name__iexact=term_name, school=school)
+
+            # === Read headers and subjects ===
+            header_row = 4
+            headers = [cell.value for cell in ws[header_row]]
+            ignore_columns = ["OTP", "TOTAL", "PERCENTAGE", "GRADE", "RESULT", "RANK"]
+            subject_cols = []
+            subject_names = []
+
+            for idx, header in enumerate(headers[3:], start=4):
+                if str(header).strip().upper() not in ignore_columns:
+                    subject_cols.append(idx)
+                    subject_names.append(str(header).strip())
+
+            subjects = {
+                s.name.lower(): s
+                for s in Subject.objects.filter(class_obj=class_obj, section=section)
+            }
+
+            # === Process student rows ===
+            for row_idx in range(header_row + 1, ws.max_row + 1):
+                name = ws.cell(row=row_idx, column=2).value
+                roll_no = ws.cell(row=row_idx, column=3).value
+                otp = ws.cell(row=row_idx, column=4).value if "OTP" in headers else None
+
+                if not name or not roll_no:
+                    continue
+
+                student, _ = Student.objects.get_or_create(
+                    school=school,
+                    class_obj=class_obj,
+                    section=section,
+                    roll_no=roll_no,
+                    defaults={"name": name, "otp": otp},
+                )
+
+                student_marks, _ = StudentMarks.objects.get_or_create(
+                    student=student, defaults={"term": term}
+                )
+
+                total = 0
+                count = 0
+                overall_pass = True
+
+                # Store subject-wise marks
+                subject_marks_data = {}
+
+                for col_idx, subj_name in zip(subject_cols, subject_names):
+                    mark = ws.cell(row=row_idx, column=col_idx).value
+                    try:
+                        mark = float(mark)
+                    except:
+                        mark = 0
+
+                    subj = subjects.get(subj_name.lower())
+                    if subj:
+                        StudentSubjectMarks.objects.update_or_create(
+                            student_marks=student_marks,
+                            subject=subj,
+                            defaults={"marks_obtained": mark},
+                        )
+
+                        subject_marks_data[subj.name] = (
+                            mark  # Add subject marks to dict
+                        )
+
+                    total += mark
+                    count += 1
+                    if mark < pass_mark:
+                        overall_pass = False
+
+                # Update student marks summary
+                percentage = (total / (full_mark * count)) * 100 if count else 0
+                student_marks.total_marks = total
+                student_marks.percentage = round(percentage, 2)
+                student_marks.grade = (
+                    student_marks.calculate_grade()
+                    if hasattr(student_marks, "calculate_grade") and overall_pass
+                    else "-"
+                )
+                student_marks.result = "Pass" if overall_pass else "Fail"
+                student_marks.save()
+
+            # === Calculate ranks within same class, section, term ===
+            student_marks_qs = StudentMarks.objects.filter(
+                student__class_obj=class_obj, student__section=section, term=term
+            ).order_by("-total_marks")
+
+            rank_dict = {}
+            for idx, sm in enumerate(student_marks_qs, start=1):
+                rank_dict[sm.student_id] = idx
+
+            # === Build processed data with grade, rank, and subject marks ===
+            processed = []
+            for sm in student_marks_qs:
+                subject_marks = {
+                    s.subject.name: s.marks_obtained for s in sm.subject_marks.all()
+                }
+                processed.append(
+                    {
+                        "student": sm.student.name,
+                        "roll_no": sm.student.roll_no,
+                        "total_marks": sm.total_marks,
+                        "percentage": sm.percentage,
+                        "grade": sm.grade if sm.result == "Pass" else "-",
+                        "result": sm.result,
+                        "rank": rank_dict.get(sm.student_id),
+                        "subjects": subject_marks,
+                    }
+                )
+
+            return Response(
+                {
+                    "msg": f"{len(processed)} students processed successfully",
+                    "data": processed,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class SingleMarksheetAPIView(APIView):
