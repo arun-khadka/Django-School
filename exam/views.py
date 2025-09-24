@@ -400,6 +400,103 @@ class MarksheetImportView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class StudentMarksRetrieveView(APIView):
+    """
+    Retrieve student marks with subjects, total, percentage, grade, result, and rank
+    filtered by school, class (grade), section, and term.
+    """
+
+    def get(self, request):
+        # Expect query params: school_id, grade, section_name, term_id
+        school_id = request.query_params.get("school_id")
+        grade = request.query_params.get("grade")
+        section_name = request.query_params.get("section_name")
+        term_id = request.query_params.get("term_id")
+
+        if not all([school_id, grade, section_name, term_id]):
+            return Response(
+                {"error": "school_id, grade, section_name, term_id are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Fetch related objects
+            school = School.objects.get(id=school_id)
+            class_obj = Class.objects.get(school=school, grade=grade)
+            section = Section.objects.get(
+                class_obj=class_obj, name__iexact=section_name
+            )
+            term = ExamTerm.objects.get(id=term_id, school=school)
+
+            # Fetch students marks
+            student_marks_qs = StudentMarks.objects.filter(
+                student__class_obj=class_obj, student__section=section, term=term
+            ).order_by("-total_marks")
+
+            # Calculate rank
+            rank_dict = {
+                sm.student_id: idx + 1 for idx, sm in enumerate(student_marks_qs)
+            }
+
+            # Build response data
+            data = []
+            for sm in student_marks_qs:
+                # Get subject marks
+                try:
+                    subject_marks = {
+                        s.subject.name: s.marks_obtained for s in sm.subject_marks.all()
+                    }
+                except AttributeError:
+                    subject_marks = {
+                        s.subject.name: s.marks_obtained
+                        for s in sm.studentsubjectmarks_set.all()
+                    }
+
+                data.append(
+                    {
+                        "student": sm.student.name,
+                        "roll_no": sm.student.roll_no,
+                        "school": school.name,
+                        "class_name": class_obj.grade,
+                        "section": section.name,
+                        "term": term.name,
+                        "total_marks": sm.total_marks,
+                        "percentage": sm.percentage,
+                        "grade": sm.grade if sm.result == "Pass" else "-",
+                        "result": sm.result,
+                        "rank": rank_dict.get(sm.student_id),
+                        "subjects": subject_marks,
+                    }
+                )
+
+            return Response(
+                {
+                    "msg": f"{len(data)} students processed successfully",
+                    "data": data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except School.DoesNotExist:
+            return Response(
+                {"error": "School not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+        except Class.DoesNotExist:
+            return Response(
+                {"error": "Class not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+        except Section.DoesNotExist:
+            return Response(
+                {"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+        except ExamTerm.DoesNotExist:
+            return Response(
+                {"error": "Term not found"}, status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class SingleMarksheetAPIView(APIView):
     parser_classes = [MultiPartParser]
 

@@ -9,6 +9,7 @@ from .views import (
     MarksheetExportView,
     MarksheetImportView,
     SingleMarksheetAPIView,
+    StudentMarksRetrieveView,
 )
 
 urlpatterns = [
@@ -34,4 +35,9 @@ urlpatterns = [
     # NEW: Single student marksheet by OTP
     path("marksheet/single/", SingleMarksheetAPIView.as_view(), name="marksheet-single-otp"),
     path("marksheet/all/", AllMarksheetAPIView.as_view(), name="marksheet-single-otp"),
+    path(
+        'student-marks/',
+        StudentMarksRetrieveView.as_view(),
+        name='student-marks-retrieve'
+    ),
 ]
