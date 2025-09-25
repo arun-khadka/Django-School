@@ -8,7 +8,7 @@ from .views import (
     ExamTermListView,
     MarksheetExportView,
     MarksheetImportView,
-    SingleMarksheetAPIView,
+    SingleStudentMarksRetrieveView,
     StudentMarksRetrieveView,
 )
 
@@ -20,6 +20,7 @@ urlpatterns = [
 
     # Export blank marksheet via query params
     path("marksheet/export/", MarksheetExportView.as_view(), name="marksheet-export"),
+    
     # Generate marksheet for a term/class/section
     path(
         "marksheet/generate/<int:term_id>/<int:class_id>/",
@@ -31,10 +32,16 @@ urlpatterns = [
         ExamMarksheetGenerateView.as_view(),
         name="marksheet-generate-section",
     ),
+
+    # Uploads filled marksheet with marks and stores in db
     path("marksheet/import/", MarksheetImportView.as_view(), name="marksheet-import"),
+
     # NEW: Single student marksheet by OTP
-    path("marksheet/single/", SingleMarksheetAPIView.as_view(), name="marksheet-single-otp"),
+    path("marksheet/single/", SingleStudentMarksRetrieveView.as_view(), name="marksheet-single-otp"),
+
     path("marksheet/all/", AllMarksheetAPIView.as_view(), name="marksheet-single-otp"),
+
+    # For fetching all marksheets
     path(
         'student-marks/',
         StudentMarksRetrieveView.as_view(),

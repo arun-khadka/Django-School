@@ -229,6 +229,7 @@ class ExamMarksheetGenerateView(APIView):
         wb.save(response)
         return response
 
+
 class MarksheetImportView(APIView):
     """
     Import an Excel marksheet, save student data & marks to DB,
@@ -242,15 +243,18 @@ class MarksheetImportView(APIView):
 
         file = serializer.validated_data["file"]
         full_mark = serializer.validated_data.get("full_mark", 100)
-        pass_mark = serializer.validated_data.get("pass_mark", 33)
+        pass_mark = serializer.validated_data.get("pass_mark", 35)
 
         try:
             import openpyxl
+
             wb = openpyxl.load_workbook(file)
             ws = wb.active
 
             # Read metadata
-            school_name = str(ws.cell(row=1, column=1).value or "").replace("School:", "").strip()
+            school_name = (
+                str(ws.cell(row=1, column=1).value or "").replace("School:", "").strip()
+            )
             class_row_value = str(ws.cell(row=2, column=1).value or "")
             parts = [p.strip() for p in class_row_value.split("|")]
             class_name = section_name = term_name = None
@@ -263,13 +267,18 @@ class MarksheetImportView(APIView):
                     term_name = part.replace("Term:", "").strip()
 
             if not all([school_name, class_name, section_name, term_name]):
-                return Response({"error": "School, Class, Section, or Term not found in Excel."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": "School, Class, Section, or Term not found in Excel."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Fetch DB objects
             school = School.objects.get(name__iexact=school_name)
             grade_int = int(class_name)
             class_obj = Class.objects.get(grade=grade_int, school=school)
-            section = Section.objects.get(name__iexact=section_name, class_obj=class_obj)
+            section = Section.objects.get(
+                name__iexact=section_name, class_obj=class_obj
+            )
             term = ExamTerm.objects.get(name__iexact=term_name, school=school)
 
             # Read headers and subjects
@@ -284,7 +293,10 @@ class MarksheetImportView(APIView):
                     subject_cols.append(idx)
                     subject_names.append(str(header).strip())
 
-            subjects = {s.name.lower(): s for s in Subject.objects.filter(class_obj=class_obj, section=section)}
+            subjects = {
+                s.name.lower(): s
+                for s in Subject.objects.filter(class_obj=class_obj, section=section)
+            }
 
             # Save student marks to DB
             for row_idx in range(header_row + 1, ws.max_row + 1):
@@ -302,7 +314,9 @@ class MarksheetImportView(APIView):
                     defaults={"name": name, "otp": otp},
                 )
 
-                student_marks, _ = StudentMarks.objects.get_or_create(student=student, defaults={"term": term})
+                student_marks, _ = StudentMarks.objects.get_or_create(
+                    student=student, defaults={"term": term}
+                )
 
                 total = 0
                 count = 0
@@ -328,15 +342,22 @@ class MarksheetImportView(APIView):
                 percentage = (total / (full_mark * count)) * 100 if count else 0
                 student_marks.total_marks = total
                 student_marks.percentage = round(percentage, 2)
-                student_marks.grade = student_marks.calculate_grade() if hasattr(student_marks, "calculate_grade") and overall_pass else "-"
+                student_marks.grade = (
+                    student_marks.calculate_grade()
+                    if hasattr(student_marks, "calculate_grade") and overall_pass
+                    else "-"
+                )
                 student_marks.result = "Pass" if overall_pass else "Fail"
                 student_marks.save()
 
             # Generate styled Excel
-            return generate_marksheet_with_results(file, full_mark, pass_mark, school, class_obj, section, term)
+            return generate_marksheet_with_results(
+                file, full_mark, pass_mark, school, class_obj, section, term
+            )
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class StudentMarksRetrieveView(APIView):
     """
@@ -435,25 +456,96 @@ class StudentMarksRetrieveView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class SingleMarksheetAPIView(APIView):
-    parser_classes = [MultiPartParser]
+# For single student marksheet
+class SingleStudentMarksRetrieveView(APIView):
+    """
+    Retrieve a single student's marksheet by name, class (grade), roll_no, section, and OTP,
+    along with the student's rank in that class/section/term.
+    """
 
     def post(self, request):
-        file = request.FILES.get("file")
-        otp_input = request.data.get("otp")
+        # Expected body JSON
+        student_name = request.data.get("student_name")
+        grade = request.data.get("grade")
+        roll_no = request.data.get("roll_no")
+        section_name = request.data.get("section_name")
+        otp = request.data.get("otp")
 
-        if not file or not otp_input:
+        if not all([student_name, grade, roll_no, section_name, otp]):
             return Response(
-                {"error": "File and OTP are required"},
+                {
+                    "error": "student_name, grade, roll_no, section_name, and otp are required"
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
-            data = get_single_student_marksheet_data(file, otp_input)
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            # Find student
+            student = Student.objects.get(
+                name__iexact=student_name.strip(),
+                roll_no=roll_no,
+                class_obj__grade=grade,
+                section__name__iexact=section_name.strip(),
+                otp=otp,
+            )
 
-        return Response(data, status=status.HTTP_200_OK)
+            # Get marks entry
+            student_marks = StudentMarks.objects.filter(student=student).first()
+            if not student_marks:
+                return Response(
+                    {"error": "Marks not found for this student"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            # 🔹 Calculate rank among peers
+            peer_marks = StudentMarks.objects.filter(
+                student__class_obj=student.class_obj,
+                student__section=student.section,
+                term=student_marks.term,
+            ).order_by("-total_marks")
+
+            rank_dict = {sm.student_id: idx + 1 for idx, sm in enumerate(peer_marks)}
+            student_rank = rank_dict.get(student.id)
+
+            # Subject-wise marks
+            try:
+                subject_marks = {
+                    sm.subject.name: sm.marks_obtained
+                    for sm in student_marks.subject_marks.all()
+                }
+            except AttributeError:
+                subject_marks = {
+                    sm.subject.name: sm.marks_obtained
+                    for sm in StudentSubjectMarks.objects.filter(
+                        student_marks=student_marks
+                    )
+                }
+
+            # Build response
+            data = {
+                "student": student.name,
+                "roll_no": student.roll_no,
+                "school": student.school.name if student.school else None,
+                "class_name": student.class_obj.grade if student.class_obj else None,
+                "section": student.section.name if student.section else None,
+                "term": student_marks.term.name if student_marks.term else None,
+                "total_marks": student_marks.total_marks,
+                "percentage": student_marks.percentage,
+                "grade": student_marks.grade if student_marks.result == "Pass" else "-",
+                "result": student_marks.result,
+                "rank": student_rank,
+                "subjects": subject_marks,
+            }
+
+            return Response(data, status=status.HTTP_200_OK)
+
+        except Student.DoesNotExist:
+            return Response(
+                {"error": "Student not found with given details"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AllMarksheetAPIView(APIView):
