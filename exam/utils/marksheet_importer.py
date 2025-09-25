@@ -27,7 +27,8 @@ def generate_marksheet_with_results(
         or excel_class
         or "-"
     )
-    
+    section_name = getattr(section, "name", "-") if section else "-"
+    term_name = getattr(term, "name", "-")
 
     # === Styles ===
     title_font = Font(bold=True, size=18, color="4F81BD")
@@ -95,7 +96,9 @@ def generate_marksheet_with_results(
     ws.merge_cells(
         start_row=2, start_column=1, end_row=2, end_column=last_subject_col + 5
     )
-    ws["A2"].value = f"Class: {class_grade}"
+    ws["A2"].value = (
+        f"Class: {class_grade} | Section: {section_name} | Term: {term_name}"
+    )
     ws["A2"].font = sub_title_font
     ws["A2"].alignment = center_align
 
