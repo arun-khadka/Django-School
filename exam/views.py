@@ -359,6 +359,7 @@ class MarksheetImportView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+# For fetching all students marksheet
 class StudentMarksRetrieveView(APIView):
     """
     Retrieve student marks with subjects, total, percentage, grade, result, and rank
@@ -459,37 +460,38 @@ class StudentMarksRetrieveView(APIView):
 # For single student marksheet
 class SingleStudentMarksRetrieveView(APIView):
     """
-    Retrieve a single student's marksheet by name, class (grade), roll_no, section, and OTP,
-    along with the student's rank in that class/section/term.
+    Retrieve a single student's marksheet by school name, class (grade), roll_no, section, and OTP.
     """
 
     def post(self, request):
-        # Expected body JSON
-        student_name = request.data.get("student_name")
+        school_name = request.data.get("school_name")
         grade = request.data.get("grade")
         roll_no = request.data.get("roll_no")
         section_name = request.data.get("section_name")
         otp = request.data.get("otp")
 
-        if not all([student_name, grade, roll_no, section_name, otp]):
+        if not all([school_name, grade, roll_no, section_name, otp]):
             return Response(
                 {
-                    "error": "student_name, grade, roll_no, section_name, and otp are required"
+                    "error": "school_name, grade, roll_no, section_name, and otp are required"
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
-            # Find student
+            # Find school by name (created by anyone)
+            school = School.objects.get(name__iexact=school_name.strip())
+
+            # Find student matching all details
             student = Student.objects.get(
-                name__iexact=student_name.strip(),
-                roll_no=roll_no,
+                school=school,
                 class_obj__grade=grade,
                 section__name__iexact=section_name.strip(),
+                roll_no=roll_no,
                 otp=otp,
             )
 
-            # Get marks entry
+            # Get student marks
             student_marks = StudentMarks.objects.filter(student=student).first()
             if not student_marks:
                 return Response(
@@ -497,13 +499,13 @@ class SingleStudentMarksRetrieveView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            # 🔹 Calculate rank among peers
+            # Calculate rank among peers in same school, class, section, and term
             peer_marks = StudentMarks.objects.filter(
+                student__school=school,
                 student__class_obj=student.class_obj,
                 student__section=student.section,
                 term=student_marks.term,
             ).order_by("-total_marks")
-
             rank_dict = {sm.student_id: idx + 1 for idx, sm in enumerate(peer_marks)}
             student_rank = rank_dict.get(student.id)
 
@@ -521,7 +523,6 @@ class SingleStudentMarksRetrieveView(APIView):
                     )
                 }
 
-            # Build response
             data = {
                 "student": student.name,
                 "roll_no": student.roll_no,
@@ -539,15 +540,20 @@ class SingleStudentMarksRetrieveView(APIView):
 
             return Response(data, status=status.HTTP_200_OK)
 
+        except School.DoesNotExist:
+            return Response(
+                {"error": "School not found"}, status=status.HTTP_404_NOT_FOUND
+            )
         except Student.DoesNotExist:
             return Response(
-                {"error": "Student not found with given details"},
+                {"error": "No student found with provided details"},
                 status=status.HTTP_404_NOT_FOUND,
             )
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+# Fetches data only when files are uploaded
 class AllMarksheetAPIView(APIView):
     parser_classes = [MultiPartParser]
 

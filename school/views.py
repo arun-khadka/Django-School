@@ -22,6 +22,23 @@ class SchoolCreateView(APIView):
         )
 
 
+# For fetching list of schools logged in or not
+class SchoolListAPIView(APIView):
+    """
+    Returns a list of schools filtered by a search query (for autocomplete).
+    """
+
+    def get(self, request):
+        query = request.query_params.get("q", "").strip()  # search query
+        if query:
+            schools = School.objects.filter(name__icontains=query).order_by("name")
+        else:
+            schools = School.objects.all().order_by("name")
+
+        data = [{"id": school.id, "name": school.name} for school in schools]
+        return Response(data, status=status.HTTP_200_OK)
+
+
 class SchoolListView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]

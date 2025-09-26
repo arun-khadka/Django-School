@@ -38,7 +38,8 @@ urlpatterns = [
 
     # NEW: Single student marksheet by OTP
     path("marksheet/single/", SingleStudentMarksRetrieveView.as_view(), name="marksheet-single-otp"),
-
+    
+    # Not for use
     path("marksheet/all/", AllMarksheetAPIView.as_view(), name="marksheet-single-otp"),
 
     # For fetching all marksheets
